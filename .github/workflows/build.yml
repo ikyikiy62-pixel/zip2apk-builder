@@ -1,0 +1,63 @@
+name: Build APK
+
+on:
+  repository_dispatch:
+    types: [build-apk]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Prepare source (URL mode)
+        if: fromJson(toJson(github.event.client_payload)).source == 'url'
+        run: |
+          mkdir -p app/src/main/assets/web
+          echo "${{ github.event.client_payload.url }}" > remote_url.txt
+
+      - name: Prepare source (ZIP mode)
+        if: fromJson(toJson(github.event.client_payload)).source == 'zip'
+        run: |
+          rm -rf app/src/main/assets/web
+          mkdir -p app/src/main/assets/web
+          curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/vnd.github.raw" \
+               -L "https://api.github.com/repos/${{ github.repository }}/contents/${{ github.event.client_payload.zipPath }}" \
+               -o source.zip
+          unzip -o source.zip -d app/src/main/assets/web
+
+      - name: Inject app config
+        run: |
+          APP_NAME="${{ github.event.client_payload.appName }}"
+          PACKAGE_ID="${{ github.event.client_payload.packageId }}"
+          REMOTE_URL="${{ github.event.client_payload.url }}"
+          SOURCE_TYPE="${{ github.event.client_payload.source }}"
+
+          sed -i "s#{{APP_NAME}}#${APP_NAME}#g" app/src/main/res/values/strings.xml
+
+          mkdir -p app/src/main/assets
+          echo "SOURCE_TYPE=${SOURCE_TYPE}" > app/src/main/assets/config.properties
+          echo "REMOTE_URL=${REMOTE_URL}" >> app/src/main/assets/config.properties
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        run: gradle assembleDebug
+
+      - name: Create release with APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.event.client_payload.id }}
+          name: "Build ${{ github.event.client_payload.appName }}"
+          files: app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
